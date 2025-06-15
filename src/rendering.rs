@@ -1,6 +1,7 @@
 use core::f32;
+use std::f32::INFINITY;
 
-use image::{ImageBuffer, Luma, Rgb, Rgb32FImage};
+use image::{ImageBuffer, ImageResult, Luma, Rgb, Rgb32FImage};
 use nalgebra_glm::*;
 use nalgebra_glm::{look_at, perspective_fov, vec2, vec4, Mat4, Vec2, Vec3, Vec4};
 
@@ -39,6 +40,17 @@ fn pt_inside_tri(v0: Vec2, v1: Vec2, v2: Vec2, p: Vec2) -> bool {
     ccw || cw
 }
 
+#[derive(Copy, Clone)]
+pub struct FaceIndex {
+    v: usize,
+    n: usize,
+}
+
+impl FaceIndex {
+    pub fn new(v: usize, n: usize) -> Self {
+        FaceIndex { v, n }
+    }
+}
 pub trait Object3D {
     fn get_object_id(&self) -> &str;
 
@@ -51,7 +63,7 @@ pub trait Object3D {
     }
 
     fn get_face_count(&self) -> usize;
-    fn get_face(&self, i: usize) -> [usize; 3];
+    fn get_face(&self, i: usize) -> [FaceIndex; 3];
 
     fn get_model_transform(&self) -> &Mat4;
 }
@@ -70,11 +82,12 @@ pub struct Camera {
 
 impl Camera {
     pub fn new(position: Vec4, center: Vec4, up: Vec3, fov: f32, near: f32, far: f32) -> Self {
+        let fov = fov * f32::consts::PI / 180f32;
         Self {
             position,
             center,
             up,
-            fov: fov * f32::consts::PI / 180f32,
+            fov,
             near,
             far,
             view_mat: look_at(&position.xyz(), &center.xyz(), &up),
@@ -89,6 +102,22 @@ impl Camera {
             * look_at(&self.position.xyz(), &self.center.xyz(), &self.up);
         self.view_mat = look_at(&self.position.xyz(), &self.center.xyz(), &self.up);
         self.proj_mat = perspective_fov(self.fov, 1f32, 1f32, self.near, self.far);
+    }
+
+    pub fn move_to(&mut self, pos: Vec4) {
+        self.position = pos;
+    }
+
+    pub fn look_at(&mut self, pos: Vec4) {
+        self.center = pos;
+    }
+
+    pub fn transform_position(&mut self, transform: Mat4) {
+        self.position = transform * self.position;
+    }
+
+    pub fn transform_center(&mut self, transform: Mat4) {
+        self.center = transform * self.center;
     }
 
     #[inline]
@@ -123,8 +152,8 @@ impl Camera {
 }
 
 pub struct Renderer<'a> {
-    render_buff: ImageBuffer<Rgb<u8>, Vec<u8>>,
-    depth_buff: ImageBuffer<Luma<f32>, Vec<f32>>,
+    pub render_buff: ImageBuffer<Rgb<u8>, Vec<u8>>,
+    pub depth_buff: ImageBuffer<Luma<f32>, Vec<f32>>,
     width: i32,
     height: i32,
 
@@ -178,8 +207,13 @@ impl<'a> Renderer<'a> {
         self.objects.push(Box::new(object));
     }
 
+    pub fn save(&mut self, path: &str) -> ImageResult<()> {
+        return self.render_buff.save(path);
+    }
+
     pub fn render(&mut self, cam: &Camera) {
         self.render_buff.fill(0); //clear buffer
+        self.depth_buff.fill(INFINITY);
 
         let inv_view_transform = cam.build_inv_view_transform();
 
@@ -189,13 +223,13 @@ impl<'a> Renderer<'a> {
 
             for face_idx in 0..obj.get_face_count() {
                 let face = obj.get_face(face_idx);
-                let v1 = obj.get_vertex(face[0]);
-                let v2 = obj.get_vertex(face[1]);
-                let v3 = obj.get_vertex(face[2]);
+                let v1 = obj.get_vertex(face[0].v);
+                let v2 = obj.get_vertex(face[1].v);
+                let v3 = obj.get_vertex(face[2].v);
 
-                let n1 = obj.get_normal(face[0]);
-                let n2 = obj.get_normal(face[1]);
-                let n3 = obj.get_normal(face[2]);
+                let n1 = obj.get_normal(face[0].n);
+                let n2 = obj.get_normal(face[1].n);
+                let n3 = obj.get_normal(face[2].n);
 
                 let v1_screen = Camera::project_point(&mvp, &vec4(v1.x, v1.y, v1.z, 1f32));
                 let v2_screen = Camera::project_point(&mvp, &vec4(v2.x, v2.y, v2.z, 1f32));
@@ -229,7 +263,7 @@ impl<'a> Renderer<'a> {
                         }
                         // println!("{}, {}, {}", p, i, j);
                         //
-                        let area = edge(v1.xy(), v2.xy(), v3.xy());
+                        let area = edge(v1_screen.xy(), v2_screen.xy(), v3_screen.xy());
 
                         if area == 0.0 {
                             continue;
@@ -258,7 +292,7 @@ impl<'a> Renderer<'a> {
 
                         // println!("{}", vz);
 
-                        if pt_inside_tri(v1.xy(), v2.xy(), v3.xy(), p)
+                        if pt_inside_tri(v1_screen.xy(), v2_screen.xy(), v3_screen.xy(), p)
                             && self.depth_buff.get_pixel(i, j).0[0] > z
                         {
                             let c = shade(cam.view_mat, world_point, n);

@@ -10,18 +10,60 @@ use image::{
     RgbImage,
 };
 use nalgebra_glm::*;
-use rayon::prelude::*;
+use rayon::{prelude::*, vec};
+use rendering::{Camera, FaceIndex, Object3D, Renderer};
 mod rendering;
 
 type Triangle = [(Vec3, Vec3); 3];
 
-fn load_obj(path: &str) -> Vec<Triangle> {
+#[derive(Clone)]
+struct MeshObject {
+    name: String,
+    vertices: Vec<Vec3>,
+    normals: Vec<Vec3>,
+    faces: Vec<[FaceIndex; 3]>,
+    transform: Mat4,
+}
+
+impl Object3D for MeshObject {
+    fn get_object_id(&self) -> &str {
+        &self.name
+    }
+    fn get_face(&self, i: usize) -> [FaceIndex; 3] {
+        self.faces[i]
+    }
+
+    fn get_vertex(&self, i: usize) -> Vec3 {
+        self.vertices[i]
+    }
+
+    fn get_normal(&self, i: usize) -> Vec3 {
+        self.normals[i]
+    }
+
+    fn get_model_transform(&self) -> &Mat4 {
+        &self.transform
+    }
+
+    fn get_vertex_count(&self) -> usize {
+        self.vertices.len()
+    }
+
+    fn get_face_count(&self) -> usize {
+        self.faces.len()
+    }
+}
+
+fn load_obj(path: &str) -> MeshObject {
+    let mut obj = MeshObject {
+        name: "monke".to_owned(),
+        vertices: vec![],
+        normals: vec![],
+        faces: vec![],
+        transform: rotate_z(&scale(&identity(), &vec3(0.6, 0.6, 0.6)), -FRAC_PI_2),
+    };
+
     let s = std::fs::read_to_string(path).unwrap();
-
-    let mut vertices: Vec<Vec3> = vec![];
-    let mut normals: Vec<Vec3> = vec![];
-
-    let mut faces = vec![];
 
     for line in s.lines() {
         let words: Vec<_> = line.split_whitespace().collect();
@@ -32,14 +74,14 @@ fn load_obj(path: &str) -> Vec<Triangle> {
                 let y = words[2].parse::<f32>().unwrap();
                 let z = words[3].parse::<f32>().unwrap();
 
-                vertices.push(Vec3::new(x, y, z));
+                obj.vertices.push(Vec3::new(x, y, z));
             }
             "vn" => {
                 let x = words[1].parse::<f32>().unwrap();
                 let y = words[2].parse::<f32>().unwrap();
                 let z = words[3].parse::<f32>().unwrap();
 
-                normals.push(normalize(&Vec3::new(x, y, z)));
+                obj.normals.push(normalize(&Vec3::new(x, y, z)));
             }
             "f" => {
                 let [v1, n1] = words[1]
@@ -64,17 +106,17 @@ fn load_obj(path: &str) -> Vec<Triangle> {
                     unreachable!()
                 };
 
-                faces.push([
-                    (vertices[v1 - 1], normals[n1 - 1]),
-                    (vertices[v2 - 1], normals[n2 - 1]),
-                    (vertices[v3 - 1], normals[n3 - 1]),
+                obj.faces.push([
+                    FaceIndex::new(v1 - 1, n1 - 1),
+                    FaceIndex::new(v2 - 1, n2 - 1),
+                    FaceIndex::new(v3 - 1, n3 - 1),
                 ]);
             }
             _ => eprintln!("Unknown element"),
         }
     }
 
-    return faces;
+    return obj;
 }
 
 /*
@@ -122,7 +164,7 @@ fn pt_inside_tri(v0: Vec2, v1: Vec2, v2: Vec2, p: Vec2) -> bool {
 }
 
 fn main() {
-    let faces = load_obj("./monke.obj");
+    let monke = load_obj("./monke.obj");
     let (width, height) = (512, 512);
 
     let fps = 24;
@@ -163,246 +205,36 @@ fn main() {
     let frame_complete_count = AtomicI32::new(0);
 
     (0..fps * duration).into_par_iter().for_each(|frame| {
-        let mut img = RgbImage::new(width, height);
-
-        let mut depth_buff: ImageBuffer<Luma<f32>, Vec<f32>> = ImageBuffer::new(width, height);
-
-        depth_buff.fill(INFINITY);
-
-        let shade = |view_transform: Mat4, v: Vec4, n: Vec4| -> Vec4 {
-            let mut g = 0.;
-            let mut color: Vec4 = vec4(0., 0., 0., 0.0);
-            // g *= f32::abs(dot(&n, &vec3(0., 0., -1.)));
-
-            let l1d = view_transform * vec4(-1.1, -1.2, 0.0, 0.0);
-            let l1p = view_transform * vec4(1.0, 0.0, 1.0, 1.0);
-
-            let mut l1i = dot(&normalize(&n), &normalize(&-l1d));
-            l1i *= 1. / distance(&v, &l1p).powi(2);
-            color += vec4(1.0, 0.3, 0.5, 0.0).scale(l1i);
-
-            let l1d = view_transform * vec4(2.1, 1.5, -1.0, 0.0);
-            let l1p = view_transform * vec4(-1.0, -1.0, 1.0, 1.0);
-
-            let mut l1i = dot(&normalize(&n), &normalize(&-l1d));
-            l1i *= 1.2 / distance(&v, &l1p).powi(2);
-            color += vec4(0.2, 0.1, 1.2, 0.0).scale(l1i);
-
-            let l1d = view_transform * vec4(0.0, 1.5, -1.0, 0.0);
-            let l1p = view_transform * vec4(-0.0, -1.0, 1.0, 1.0);
-
-            let mut l1i = dot(&normalize(&n), &normalize(&-l1d));
-            l1i *= 1.2 / distance(&v, &l1p).powi(2);
-            color += vec4(0.0, 1.0, 0.0, 0.0).scale(l1i);
-
-            // vec3(g, g, g )
-            color
-
-            // vec4(1.0, 1.0, 1.0, 0.0)
-        };
-
+        let camera_pos = vec3(0f32, 0f32, 2f32);
         let camera_transform = m_roty(frame as f32 * 2.0 * PI / (fps as f32 * duration as f32));
 
-        let camera_pos = vec3(0.0f32, 0.0, 2.0);
         let camera_pos = camera_transform * camera_pos;
 
-        let look_direction = vec3(0.0f32, 0.0, 0.0);
+        let camera = Camera::new(
+            vec4(camera_pos.x, camera_pos.y, camera_pos.z, 1.0f32),
+            vec4(0f32, 0f32, 0f32, 1f32),
+            vec3(0f32, 1f32, 0f32),
+            60f32,
+            0.1,
+            10.0,
+        );
 
-        let model_transform = identity();
-        // let model_transform = rotate_y(
-        //     &model_transform,
-        //     frame as f32 * 2.0 * PI / (fps as f32 * duration as f32),
-        // );
+        let mut renderer = Renderer::new(width as i32, height as i32);
 
-        // let model_transform = m_roty(0.0);
-        let view_transform = look_at(&camera_pos, &look_direction, &vec3(0.0f32, 1.0, 0.0));
+        renderer.add_object(monke.clone());
 
-        let projection_transform =
-            perspective_fov(60f32 * f32::consts::PI / 180f32, 1f32, 1f32, 0.1f32, 10f32);
+        renderer.render(&camera);
 
-        let model_view = view_transform * model_transform;
-
-        let normal_transform = model_view.try_inverse().unwrap().transpose();
-
-        let inv_view_transform = (projection_transform).try_inverse().unwrap(); //takes NDC to View space, during interpolation to give vertex coords to shader
-
-        for (face_num, face) in faces.iter().enumerate() {
-            // if face_num > frame {
-            //     continue;
-            // }
-            let mut v1 = m_rotz(-FRAC_PI_2) * face[0].0.scale(0.6);
-            let mut v2 = m_rotz(-FRAC_PI_2) * face[1].0.scale(0.6);
-            let mut v3 = m_rotz(-FRAC_PI_2) * face[2].0.scale(0.6);
-
-            // let model_transform = m_roty(frame as f32 * 2.0 * PI / (fps as f32 * duration as f32));
-
-            // let mvp = projection_transform
-
-            let mut v1 = vec4(v1.x, v1.y, v1.z, 1.0);
-            let mut v2 = vec4(v2.x, v2.y, v2.z, 1.0);
-            let mut v3 = vec4(v3.x, v3.y, v3.z, 1.0);
-            v1 = model_view * v1;
-            v2 = model_view * v2;
-            v3 = model_view * v3;
-
-            let view_v1 = v1;
-            let view_v2 = v2;
-            let view_v3 = v3;
-
-            let v1 = projection_transform * v1;
-            let v2 = projection_transform * v2;
-            let v3 = projection_transform * v3;
-
-            let n1 = m_rotz(-FRAC_PI_2) * face[0].1;
-            let n2 = m_rotz(-FRAC_PI_2) * face[1].1;
-            let n3 = m_rotz(-FRAC_PI_2) * face[2].1;
-
-            let n1 = vec4(n1.x, n1.y, n1.z, 0.0);
-            let n2 = vec4(n2.x, n2.y, n2.z, 0.0);
-            let n3 = vec4(n3.x, n3.y, n3.z, 0.0);
-
-            let n1 = normal_transform * n1;
-            let n2 = normal_transform * n2;
-            let n3 = normal_transform * n3;
-
-            let cam_z = 2.5;
-            // v1.z -= cam_z;
-            // v2.z -= cam_z;
-            // v3.z -= cam_z;
-
-            // v1.x *= near / v1.z;
-            // v1.y *= near / v1.z;
-
-            // v2.x *= near / v2.z;
-            // v2.y *= near / v2.z;
-
-            // v3.x *= near / v3.z;
-            // v3.y *= near / v3.z;
-
-            let v1 = v1.xyz() / v1.w;
-            let v2 = v2.xyz() / v2.w;
-            let v3 = v3.xyz() / v3.w;
-
-            let (mut x_min, mut y_min) = (INFINITY, INFINITY);
-            let (mut x_max, mut y_max) = (-INFINITY, -INFINITY);
-
-            if v1.x < x_min {
-                x_min = v1.x;
-            }
-            if v1.y < y_min {
-                y_min = v1.y;
-            }
-            if v2.x < x_min {
-                x_min = v2.x;
-            }
-            if v2.y < y_min {
-                y_min = v2.y
-            }
-            if v3.x < x_min {
-                x_min = v3.x;
-            }
-            if v3.y < y_min {
-                y_min = v3.y;
-            }
-
-            if v1.x > x_max {
-                x_max = v1.x;
-            }
-            if v2.x > x_max {
-                x_max = v2.x;
-            }
-            if v3.x > x_max {
-                x_max = v3.x;
-            }
-            if v1.y > y_max {
-                y_max = v1.y;
-            }
-            if v2.y > y_max {
-                y_max = v2.y;
-            }
-            if v3.y > y_max {
-                y_max = v3.y;
-            }
-
-            let imin = s_to_i(vec2(x_min, y_min), width, height);
-            let imax = s_to_i(vec2(x_max, y_max), width, height);
-
-            // println!("({}, {}), ({}, {})", imin.0, imin.1, imax.0, imax.1);
-
-            for i in imin.0..=imax.0 {
-                for j in imax.1..=imin.1 {
-                    let p = i_to_s((i, j), width, height);
-
-                    if i >= width || j >= height {
-                        continue;
-                    }
-                    // println!("{}, {}, {}", p, i, j);
-                    //
-                    let area = edge(v1.xy(), v2.xy(), v3.xy());
-
-                    if area == 0.0 {
-                        continue;
-                    }
-
-                    let w0 = edge(v2.xy(), v3.xy(), p) / area;
-                    let w1 = edge(v3.xy(), v1.xy(), p) / area;
-                    let w2 = edge(v1.xy(), v2.xy(), p) / area;
-
-                    let z = 1.0 / (w0 / v1.z + w1 / v2.z + w2 / v3.z);
-
-                    let x = w0 * v1.x + w1 * v2.x + w2 * v3.x;
-                    let y = w0 * v1.y + w1 * v2.y + w2 * v3.y;
-
-                    let nx = z * (n1.x * w0 / z + n2.x * w1 / z + n3.x * w2 / z);
-                    let ny = z * (n1.y * w0 / z + n2.y * w1 / z + n3.y * w2 / z);
-                    let nz = z * (n1.z * w0 / z + n2.z * w1 / z + n3.z * w2 / z);
-                    //
-                    // let n = if area > 0.0 { cross(&(v2 - v1), &(v3-v2)) } else { -cross(&(v3-v2), &(v2-v1)) };
-
-                    let n = vec4(nx, ny, nz, 0.0);
-
-                    let ndc_point = vec4(x, y, z, 1.0);
-                    let view_point = inv_view_transform * ndc_point;
-                    let world_point = view_point / view_point.w;
-
-                    // println!("{}", vz);
-
-                    if pt_inside_tri(v1.xy(), v2.xy(), v3.xy(), p)
-                        && depth_buff.get_pixel(i, j).0[0] > z
-                    {
-                        let c = shade(view_transform, world_point, n);
-                        img.put_pixel(
-                            i,
-                            j,
-                            Rgb([
-                                (c.x.clamp(0., 1.0) * 255.0).round() as u8,
-                                (c.y.clamp(0., 1.0) * 255.0).round() as u8,
-                                (c.z.clamp(0., 1.0) * 255.0).round() as u8,
-                            ]),
-                        );
-                        depth_buff.put_pixel(i, j, Luma([z]));
-
-                        // if (c.x >= 1.0 && c.y >= 1.0 && c.z >= 1.0) {
-                        //     println!("{}", vec3(nx, ny, nz));
-                        // }
-                    }
-                }
-            }
-
-            // let (i, j) = s_to_i(v1.xy(), width, height);
-            // img.put_pixel(i, j, Rgb([255, 255, 200]));
-            //
-            //
-            // let (i, j) = s_to_i(v2.xy(), width, height);
-            // img.put_pixel(i, j, Rgb([255, 255, 200]));
-            //
-            // let (i, j) = s_to_i(v3.xy(), width, height);
-            // img.put_pixel(i, j, Rgb([255, 255, 200]));
-        }
+        // renderer
+        // .save(&format!(
+        //     "./out/frame-{}.png",
+        //     frame_complete_count.load(std::sync::atomic::Ordering::SeqCst)
+        // ))
+        // .unwrap();
 
         let mut bloom_buff = RgbImage::new(width, height);
 
-        for (x, y, pixel) in img.enumerate_pixels() {
+        for (x, y, pixel) in renderer.render_buff.enumerate_pixels() {
             let brightness = (pixel[0] as f32 + pixel[1] as f32 + pixel[2] as f32) / 3.0 / 255.0;
             if brightness > bloom_threshold {
                 let bloom_color = Rgb([
@@ -421,7 +253,7 @@ fn main() {
         for i in 0i32..(width as i32 * height as i32) {
             let x = i % width as i32;
             let y = i / width as i32;
-            let pix = img.get_pixel(x as u32, y as u32).0;
+            let pix = renderer.render_buff.get_pixel(x as u32, y as u32).0;
             let mut r = pix[0] as f32;
             let mut g = pix[1] as f32;
             let mut b = pix[2] as f32;
