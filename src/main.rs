@@ -54,13 +54,16 @@ impl Object3D for MeshObject {
     }
 }
 
-fn load_obj(path: &str) -> MeshObject {
+fn load_obj(path: &str) -> Vec<MeshObject> {
+    let mut objs = vec![];
+    let mut vertex_idx_offset = 0;
+    let mut normal_idx_offset = 0;
     let mut obj = MeshObject {
         name: "monke".to_owned(),
         vertices: vec![],
         normals: vec![],
         faces: vec![],
-        transform: rotate_z(&scale(&identity(), &vec3(0.6, 0.6, 0.6)), -FRAC_PI_2),
+        transform: identity(),
     };
 
     let s = std::fs::read_to_string(path).unwrap();
@@ -69,6 +72,23 @@ fn load_obj(path: &str) -> MeshObject {
         let words: Vec<_> = line.split_whitespace().collect();
 
         match words[0] {
+            "o" => {
+                if obj.faces.len() > 0 {
+                    println!("Pushing object {}", obj.name);
+                    vertex_idx_offset += obj.vertices.len();
+                    normal_idx_offset += obj.normals.len();
+                    objs.push(obj)
+                }
+
+                let object_name = words[1];
+                obj = MeshObject {
+                    name: object_name.to_owned(),
+                    vertices: vec![],
+                    normals: vec![],
+                    faces: vec![],
+                    transform: identity(),
+                }
+            }
             "v" => {
                 let x = words[1].parse::<f32>().unwrap();
                 let y = words[2].parse::<f32>().unwrap();
@@ -107,16 +127,21 @@ fn load_obj(path: &str) -> MeshObject {
                 };
 
                 obj.faces.push([
-                    FaceIndex::new(v1 - 1, n1 - 1),
-                    FaceIndex::new(v2 - 1, n2 - 1),
-                    FaceIndex::new(v3 - 1, n3 - 1),
+                    FaceIndex::new(v1 - 1 - vertex_idx_offset, n1 - 1 - normal_idx_offset),
+                    FaceIndex::new(v2 - 1 - vertex_idx_offset, n2 - 1 - normal_idx_offset),
+                    FaceIndex::new(v3 - 1 - vertex_idx_offset, n3 - 1 - normal_idx_offset),
                 ]);
             }
             _ => eprintln!("Unknown element"),
         }
     }
 
-    return obj;
+    if obj.faces.len() > 0 {
+        println!("Pushing object {}", obj.name);
+        objs.push(obj)
+    }
+
+    return objs;
 }
 
 /*
@@ -164,7 +189,7 @@ fn pt_inside_tri(v0: Vec2, v1: Vec2, v2: Vec2, p: Vec2) -> bool {
 }
 
 fn main() {
-    let monke = load_obj("./monke.obj");
+    let objs = load_obj("./scene.obj");
     let (width, height) = (512, 512);
 
     let fps = 24;
@@ -204,8 +229,8 @@ fn main() {
 
     let frame_complete_count = AtomicI32::new(0);
 
-    (0..fps * duration).into_par_iter().for_each(|frame| {
-        let camera_pos = vec3(0f32, 0f32, 2f32);
+    (0..fps * duration).for_each(|frame| {
+        let camera_pos = vec3(0f32, 1f32, 4f32);
         let camera_transform = m_roty(frame as f32 * 2.0 * PI / (fps as f32 * duration as f32));
 
         let camera_pos = camera_transform * camera_pos;
@@ -214,14 +239,16 @@ fn main() {
             vec4(camera_pos.x, camera_pos.y, camera_pos.z, 1.0f32),
             vec4(0f32, 0f32, 0f32, 1f32),
             vec3(0f32, 1f32, 0f32),
-            60f32,
+            80f32,
             0.1,
             10.0,
         );
 
         let mut renderer = Renderer::new(width as i32, height as i32);
 
-        renderer.add_object(monke.clone());
+        for obj in objs.clone() {
+            renderer.add_object(obj);
+        }
 
         renderer.render(&camera);
 
